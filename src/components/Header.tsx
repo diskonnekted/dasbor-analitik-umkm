@@ -7,6 +7,12 @@ const NAV = [
   { to: "/", label: "Dasbor", end: true },
   { to: "/klaster", label: "Klaster" },
   { to: "/industri", label: "Industri" },
+  { to: "/pasar", label: "Pasar" },
+  { to: "/spasial", label: "Spasial" },
+  { to: "/makro", label: "Makro" },
+  { to: "/korelasi", label: "Korelasi" },
+  { to: "/rekomendasi", label: "Rekomendasi" },
+  { to: "/inflasi", label: "Inflasi" },
   { to: "/terpadu", label: "Terpadu" },
 ];
 

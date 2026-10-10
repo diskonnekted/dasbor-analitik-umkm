@@ -55,6 +55,14 @@ CREATE TABLE IF NOT EXISTS home_industri (
   pangan INTEGER, sandang INTEGER, konveksi INTEGER, jasa INTEGER, lain INTEGER, jumlah INTEGER, tahun INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_homeind_kec ON home_industri(kecamatan, tahun);
+CREATE TABLE IF NOT EXISTS rumah_makan (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, kecamatan TEXT, jumlah INTEGER, tahun INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_rumahmakan_kec ON rumah_makan(kecamatan, tahun);
+CREATE TABLE IF NOT EXISTS dana_desa (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, kecamatan TEXT, jumlah INTEGER, tahun INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_danadesa_kec ON dana_desa(kecamatan, tahun);
 CREATE TABLE IF NOT EXISTS sarana_perdagangan (id INTEGER PRIMARY KEY AUTOINCREMENT, jenis TEXT, jumlah INTEGER, tahun INTEGER);
 CREATE TABLE IF NOT EXISTS makro (
   id INTEGER PRIMARY KEY AUTOINCREMENT, tahun INTEGER, sektor TEXT, nilai REAL, kontribusi REAL
@@ -62,6 +70,30 @@ CREATE TABLE IF NOT EXISTS makro (
 CREATE TABLE IF NOT EXISTS pertumbuhan (
   id INTEGER PRIMARY KEY AUTOINCREMENT, tahun INTEGER, wilayah TEXT, laju REAL
 );
+
+-- Data makro BPS (long-form, tahun+nilai) — Tahap 2 dashboard
+CREATE TABLE IF NOT EXISTS ipm (tahun INTEGER PRIMARY KEY, nilai REAL);
+CREATE TABLE IF NOT EXISTS gini (tahun INTEGER PRIMARY KEY, nilai REAL);
+CREATE TABLE IF NOT EXISTS garis_kemiskinan (tahun INTEGER PRIMARY KEY, nilai REAL);
+CREATE TABLE IF NOT EXISTS pop_miskin (tahun INTEGER PRIMARY KEY, jumlah INTEGER, proporsi REAL);
+CREATE TABLE IF NOT EXISTS indeks_kedalaman (tahun INTEGER PRIMARY KEY, nilai REAL);
+CREATE TABLE IF NOT EXISTS indeks_keparahan (tahun INTEGER PRIMARY KEY, nilai REAL);
+CREATE TABLE IF NOT EXISTS pdrb (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, tahun INTEGER, sektor TEXT,
+  nilai REAL, kontribusi REAL, jenis TEXT  -- 'berlaku' | 'konstan'
+);
+CREATE INDEX IF NOT EXISTS idx_pdrb_tahun ON pdrb(tahun, jenis);
+
+-- Tahap 4: inflasi & daya beli (long-form, tahun+wilayah) — sumber BPS Perbandingan Laju Inflasi
+CREATE TABLE IF NOT EXISTS inflasi (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, tahun INTEGER, wilayah TEXT, nilai REAL
+);
+CREATE INDEX IF NOT EXISTS idx_inflasi_tahun ON inflasi(tahun);
+-- Tahap 4: pengeluaran per kapita (long-form, tahun+wilayah) — sumber BPS Perbandingan Pengeluaran Perkapita
+CREATE TABLE IF NOT EXISTS pengeluaran_perkapita (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, tahun INTEGER, wilayah TEXT, nilai REAL
+);
+CREATE INDEX IF NOT EXISTS idx_pengeluaran_tahun ON pengeluaran_perkapita(tahun);
 `;
 
 async function fetchText(path: string): Promise<string> {
@@ -157,6 +189,30 @@ function importHomeIndustri(text: string) {
   }
 }
 
+function importRumahMakan(text: string) {
+  for (const r of parseCSV(text).rows) {
+    if (r[0] === "Kecamatan") continue;
+    const nama = normKecamatan(r[0]);
+    const tahun = toNumber(r[2]);
+    if (!nama || tahun == null) continue;
+    const jumlah = toNumber(r[1]) ?? 0;
+    insertRun("INSERT INTO rumah_makan (kecamatan,jumlah,tahun) VALUES (?,?,?)", [nama, jumlah, tahun]);
+    insertRun("INSERT OR IGNORE INTO kecamatan (nama) VALUES (?)", [nama]);
+  }
+}
+
+function importDanaDesa(text: string) {
+  for (const r of parseCSV(text).rows) {
+    if (r[0] === "Kecamatan ") continue;
+    const nama = normKecamatan(r[0]);
+    const tahun = toNumber(r[2]);
+    if (!nama || tahun == null) continue;
+    const jumlah = toNumber(r[1]) ?? 0;
+    insertRun("INSERT INTO dana_desa (kecamatan,jumlah,tahun) VALUES (?,?,?)", [nama, jumlah, tahun]);
+    insertRun("INSERT OR IGNORE INTO kecamatan (nama) VALUES (?)", [nama]);
+  }
+}
+
 function importSarana(text: string) {
   const { headers, rows } = parseCSV(text);
   for (const r of rows) {
@@ -191,6 +247,80 @@ function importPertumbuhan(text: string) {
   }
 }
 
+// ---- Importer Tahap 2: data makro BPS long-form ----
+function importPdrb(text: string, jenis: "berlaku" | "konstan") {
+  const { headers, rows } = parseCSV(text);
+  for (const r of rows) {
+    const sektor = col(r, headers, "Sektor");
+    const nilai = toNumber(col(r, headers, "Nilai"));
+    const kontribusi = toNumber(col(r, headers, "Kontribusi"));
+    const tahun = toNumber(col(r, headers, "Tahun"));
+    if (!sektor || !tahun) continue;
+    insertRun(
+      "INSERT INTO pdrb (tahun,sektor,nilai,kontribusi,jenis) VALUES (?,?,?,?,?)",
+      [tahun, sektor, nilai, kontribusi, jenis]
+    );
+    // juga ke tabel makro (untuk getStatCards), hanya harga berlaku
+    if (jenis === "berlaku") {
+      insertRun(
+        "INSERT INTO makro (tahun,sektor,nilai,kontribusi) VALUES (?,?,?,?)",
+        [tahun, sektor, nilai, kontribusi]
+      );
+    }
+  }
+}
+
+function importTahunNilai(text: string, table: string, nilaiCol: string, jumlahCol?: string) {
+  const { headers, rows } = parseCSV(text);
+  for (const r of rows) {
+    const tahun = toNumber(col(r, headers, "Tahun"));
+    const nilai = toNumber(col(r, headers, nilaiCol));
+    if (!tahun) continue;
+    if (jumlahCol) {
+      const jumlah = toNumber(col(r, headers, jumlahCol)) ?? 0;
+      insertRun(`INSERT INTO ${table} (tahun,jumlah,proporsi) VALUES (?,?,?)`, [tahun, jumlah, nilai]);
+    } else {
+      insertRun(`INSERT INTO ${table} (tahun,nilai) VALUES (?,?)`, [tahun, nilai]);
+    }
+  }
+}
+
+/** Tahap 4 — long-form tahun+wilayah+nilai untuk inflasi & pengeluaran per kapita. Nilai "-" jadi NULL (Banjarnegara tidak punya data inflasi). */
+function importTahunWilayahNilai(text: string, table: string, nilaiCol: string) {
+  const { headers, rows } = parseCSV(text);
+  const nilaiIdx = headers.findIndex((h) => h.trim().toLowerCase() === nilaiCol.toLowerCase());
+  for (const r of rows) {
+    const tahun = toNumber(r[0]);
+    if (!tahun) continue;
+    insertRun(`INSERT INTO ${table} (tahun,wilayah,nilai) VALUES (?,?,?)`, [tahun, r[1] ?? "", toNumber(r[nilaiIdx])]);
+  }
+}
+
+/**
+ * Long-format BPS "perbandingan" (baris = 1 wilayah × 1 tahun).
+ * Kolom ditemukan dari NAMA header (bukan posisi): "Tahun" → tahun, nilaiCol → nilai,
+ * sisanya (Pembanding / Kabupaten / Wilayah) → wilayah.
+ */
+function importPerbandingan(text: string, table: string, nilaiCol: string) {
+  const { headers, rows } = parseCSV(text);
+  const low = headers.map((h) => h.trim().toLowerCase());
+  const tahunIdx = low.findIndex((h) => h === "tahun");
+  const nilIdx = low.findIndex((h) => h === nilaiCol.toLowerCase());
+  if (tahunIdx < 0 || nilIdx < 0) throw new Error(`header Tahun/${nilaiCol} tidak ada`);
+  let wilIdx = low.findIndex((h) => h === "pembanding" || h === "kabupaten" || h === "wilayah");
+  if (wilIdx < 0) wilIdx = tahunIdx === 0 ? 2 : 0;
+  for (const r of rows) {
+    const tahun = toNumber(r[tahunIdx]);
+    if (!tahun) continue;
+    insertRun(`INSERT INTO ${table} (tahun,wilayah,nilai) VALUES (?,?,?)`, [
+      tahun,
+      (r[wilIdx] ?? "").trim(),
+      toNumber(r[nilIdx]),
+    ]);
+  }
+}
+
+
 export async function initDB(): Promise<Database> {
   if (db) return db;
   if (!SQL) {
@@ -205,9 +335,20 @@ export async function initDB(): Promise<Database> {
     { path: "/data/industri.csv", fn: importIndustri },
     { path: "/data/pasar.csv", fn: importPasar },
     { path: "/data/home_industri.csv", fn: importHomeIndustri },
+    { path: "/data/rumah_makan.csv", fn: importRumahMakan },
+    { path: "/data/dana_desa.csv", fn: importDanaDesa },
     { path: "/data/sarana_perdagangan.csv", fn: importSarana },
-    { path: "/data/pdrb_berlaku.csv", fn: importMakro },
     { path: "/data/laju_pertumbuhan.csv", fn: importPertumbuhan },
+    { path: "/data/pdrb_berlaku.csv", fn: (t: string) => importPdrb(t, "berlaku") },
+    { path: "/data/pdrb_konstan.csv", fn: (t: string) => importPdrb(t, "konstan") },
+    { path: "/data/ipm.csv", fn: (t: string) => importTahunNilai(t, "ipm", "Nilai") },
+    { path: "/data/gini.csv", fn: (t: string) => importTahunNilai(t, "gini", "Nilai") },
+    { path: "/data/garis_kemiskinan.csv", fn: (t: string) => importTahunNilai(t, "garis_kemiskinan", "GarisKemiskinan") },
+    { path: "/data/pop_miskin.csv", fn: (t: string) => importTahunNilai(t, "pop_miskin", "ProsentasePendudukMiskin", "JumlahPendudukMiskin") },
+    { path: "/data/indeks_kedalaman.csv", fn: (t: string) => importTahunNilai(t, "indeks_kedalaman", "IndeksKedalaman") },
+    { path: "/data/indeks_keparahan.csv", fn: (t: string) => importTahunNilai(t, "indeks_keparahan", "IndeksKeparahan") },
+    { path: "/data/inflasi.csv", fn: (t: string) => importPerbandingan(t, "inflasi", "Inflasi") },
+    { path: "/data/pengeluaran_perkapita.csv", fn: (t: string) => importPerbandingan(t, "pengeluaran_perkapita", "Pengeluaran Perkapita (Rp)") },
   ] as const;
 
   for (const f of files) {
@@ -336,4 +477,203 @@ export function getPertumbuhan() {
   return query<{ tahun: number; wilayah: string; laju: number }>(
     "SELECT tahun, wilayah, laju FROM pertumbuhan ORDER BY tahun, wilayah"
   );
+}
+
+export function getPasarTren() {
+  return query<{ tahun: number; jenis: string; jumlah: number }>(
+    "SELECT tahun, jenis, jumlah FROM pasar ORDER BY tahun, jenis"
+  );
+}
+
+export function getPasarTahunList() {
+  return query<{ t: number }>("SELECT DISTINCT tahun t FROM pasar ORDER BY t").map((r) => r.t);
+}
+
+export function getSaranaTren() {
+  return query<{ tahun: number; jenis: string; jumlah: number }>(
+    "SELECT tahun, jenis, jumlah FROM sarana_perdagangan ORDER BY tahun, jenis"
+  );
+}
+
+// Agregat industri per sub-jenis (untuk matriks unit × tenaga kerja × nilai produksi).
+export function getIndustriAgregat() {
+  return query<{ tahun: number; jenis: string; unit: number; tkerja: number; nilai: number }>(
+    "SELECT tahun, jenis_normalized jenis, jumlah_perusahaan unit, tenaga_kerja, produksi nilai FROM industri ORDER BY tahun, jenis_normalized"
+  );
+}
+
+// Home industri per kecamatan (untuk peta spasial industri rumahan).
+export function getHomeIndustriKecamatan() {
+  return query<{ tahun: number; kecamatan: string; jumlah: number }>(
+    "SELECT tahun, kecamatan, jumlah FROM home_industri ORDER BY tahun, kecamatan"
+  );
+}
+
+// ================= Tahap 2: Dashboard Makro BPS =================
+
+export interface MakroSeri {
+  tahun: number;
+  nilai: number;
+}
+
+function seriSQL(table: string, col: string): MakroSeri[] {
+  return query<MakroSeri>(`SELECT tahun, ${col} nilai FROM ${table} ORDER BY tahun`);
+}
+
+export function getIpmTren(): MakroSeri[] { return seriSQL("ipm", "nilai"); }
+export function getGiniTren(): MakroSeri[] { return seriSQL("gini", "nilai"); }
+export function getPertumbuhanTren(): MakroSeri[] {
+  return query<MakroSeri>(
+    "SELECT tahun, laju nilai FROM pertumbuhan WHERE wilayah='Banjarnegara' ORDER BY tahun"
+  );
+}
+export function getGarisKemiskinanTren(): MakroSeri[] { return seriSQL("garis_kemiskinan", "nilai"); }
+export function getKedalamanTren(): MakroSeri[] { return seriSQL("indeks_kedalaman", "nilai"); }
+export function getKeparahanTren(): MakroSeri[] { return seriSQL("indeks_keparahan", "nilai"); }
+
+export interface PopMiskinRow { tahun: number; jumlah: number; proporsi: number; }
+export function getPopMiskin(): PopMiskinRow[] {
+  return query<PopMiskinRow>("SELECT tahun, jumlah, proporsi FROM pop_miskin ORDER BY tahun");
+}
+
+export interface PdrbRow { tahun: number; sektor: string; nilai: number; kontribusi: number; }
+export function getPdrbTahunList(jenis: "berlaku" | "konstan" = "berlaku"): number[] {
+  return query<{ t: number }>("SELECT DISTINCT tahun t FROM pdrb WHERE jenis=? ORDER BY t", [jenis]).map((r) => r.t);
+}
+export function getPdrbSektorList(jenis: "berlaku" | "konstan" = "berlaku"): string[] {
+  return query<{ s: string }>("SELECT DISTINCT sektor s FROM pdrb WHERE jenis=? ORDER BY s", [jenis]).map((r) => r.s);
+}
+/** PDRB per sektor untuk satu tahun (bar chart). */
+export function getPdrbTahun(tahun: number, jenis: "berlaku" | "konstan" = "berlaku"): PdrbRow[] {
+  return query<PdrbRow>(
+    "SELECT tahun, sektor, nilai, kontribusi FROM pdrb WHERE tahun=? AND jenis=? ORDER BY nilai DESC",
+    [tahun, jenis]
+  );
+}
+/** PDRB per sektor lintas tahun (line chart, multi-seri). */
+export function getPdrbTrenSektor(jenis: "berlaku" | "konstan" = "berlaku"): PdrbRow[] {
+  return query<PdrbRow>(
+    "SELECT tahun, sektor, nilai, kontribusi FROM pdrb WHERE jenis=? ORDER BY tahun, sektor",
+    [jenis]
+  );
+}
+
+// ================= Tahap 3: Korelasi Koperasi ↔ Industri + Prediksi =================
+
+export interface KecPairRow {
+  kecamatan: string;
+  koperasi: number;
+  homeIndustri: number;
+  pangan: number;
+  sandang: number;
+  konveksi: number;
+  jasa: number;
+}
+
+export function getKecPair(tahun: number): KecPairRow[] {
+  return query<KecPairRow>(
+    `SELECT k.kecamatan, k.jumlah koperasi, h.jumlah homeIndustri,
+            COALESCE(h.pangan,0) pangan, COALESCE(h.sandang,0) sandang,
+            COALESCE(h.konveksi,0) konveksi, COALESCE(h.jasa,0) jasa
+     FROM koperasi_aktif k
+     JOIN home_industri h ON h.kecamatan = k.kecamatan AND h.tahun = k.tahun
+     WHERE k.tahun = ? ORDER BY k.kecamatan`,
+    [tahun]
+  );
+}
+
+export interface TahunPair { tahun: number; koperasi: number; homeIndustri: number; }
+export function getTahunPairTren(): TahunPair[] {
+  return query<TahunPair>(
+    `SELECT a.tahun, a.koperasi, i.homeIndustri
+     FROM (SELECT tahun, SUM(jumlah) koperasi FROM koperasi_aktif GROUP BY tahun) a
+     JOIN (SELECT tahun, SUM(jumlah) homeIndustri FROM home_industri GROUP BY tahun) i
+     ON i.tahun = a.tahun ORDER BY a.tahun`
+  );
+}
+
+export function getKorelasiTahunList(): number[] {
+  return query<{ t: number }>(
+    `SELECT a.tahun t FROM (SELECT DISTINCT tahun FROM koperasi_aktif) a
+     JOIN (SELECT DISTINCT tahun FROM home_industri) b ON b.tahun = a.tahun ORDER by t`
+  ).map((r) => r.t);
+}
+
+/** Pair (koperasi, nilai) per kecamatan utk tahun tertentu; nilai dari tabel variabel B apa pun. */
+export function getKecPairGeneric(
+  tahun: number,
+  table: "home_industri" | "rumah_makan" | "dana_desa"
+): { kecamatan: string; koperasi: number; nilai: number }[] {
+  const q = `
+    SELECT k.kecamatan,
+           COALESCE(k.jumlah, 0) AS koperasi,
+           COALESCE(b.jumlah, 0) AS nilai
+    FROM koperasi_aktif k
+    LEFT JOIN ${table} b ON b.kecamatan = k.kecamatan AND b.tahun = k.tahun
+    WHERE k.tahun = ?
+    ORDER BY k.kecamatan
+  `;
+  return query<{ kecamatan: string; koperasi: number; nilai: number }>(q, [tahun]);
+}
+
+export function getKecamatanList(): string[] {
+  return query<{ n: string }>(
+    `SELECT k.kecamatan n FROM (SELECT DISTINCT kecamatan FROM koperasi_aktif) k
+     JOIN (SELECT DISTINCT kecamatan FROM home_industri) h ON h.kecamatan = k.kecamatan
+     ORDER BY n`
+  ).map((r) => r.n);
+}
+
+export function getKoperasiKecamatanTren(kecamatan: string) {
+  return query<{ tahun: number; jumlah: number }>(
+    "SELECT tahun, jumlah FROM koperasi_aktif WHERE kecamatan=? ORDER BY tahun",
+    [kecamatan]
+  );
+}
+
+export function getHomeIndustriKecamatanTren(kecamatan: string) {
+  return query<{ tahun: number; jumlah: number }>(
+    "SELECT tahun, jumlah FROM home_industri WHERE kecamatan=? ORDER BY tahun",
+    [kecamatan]
+  );
+}
+
+export function getRumahMakanTahunList(): number[] {
+  return query<{ t: number }>("SELECT DISTINCT tahun t FROM rumah_makan ORDER BY t").map((r) => r.t);
+}
+export function getDanaDesaTahunList(): number[] {
+  return query<{ t: number }>("SELECT DISTINCT tahun t FROM dana_desa ORDER BY t").map((r) => r.t);
+}
+
+// ================= Tahap 4: Inflasi & Daya Beli (pengeluaran per kapita) =================
+
+export interface InflasiRow { tahun: number; wilayah: string; nilai: number | null }
+export interface PengeluaranRow { tahun: number; wilayah: string; nilai: number | null }
+
+/** Daftar wilayah yang ada di tabel inflasi (untuk filter/saksi). */
+export function getInflasiWilayahList(): string[] {
+  return query<{ w: string }>("SELECT DISTINCT wilayah w FROM inflasi ORDER BY w").map((r) => r.w);
+}
+/** Inflasi per wilayah lintas tahun (multi-seri line). NULL = wilayah tidak punya data di tahun tsb (mis. Banjarnegara). */
+export function getInflasiTren(): InflasiRow[] {
+  return query<InflasiRow>("SELECT tahun, wilayah, nilai FROM inflasi ORDER BY tahun, wilayah");
+}
+/** Inflasi per wilayah untuk satu tahun (bar). */
+export function getInflasiTahun(tahun: number): InflasiRow[] {
+  return query<InflasiRow>("SELECT tahun, wilayah, nilai FROM inflasi WHERE tahun=? ORDER BY tahun, wilayah", [tahun]);
+}
+export function getInflasiTahunList(): number[] {
+  return query<{ t: number }>("SELECT DISTINCT tahun t FROM inflasi ORDER BY t").map((r) => r.t);
+}
+
+/** Pengeluaran per kapita per wilayah lintas tahun (multi-seri line). */
+export function getPengeluaranTren(): PengeluaranRow[] {
+  return query<PengeluaranRow>("SELECT tahun, wilayah, nilai FROM pengeluaran_perkapita ORDER BY tahun, wilayah");
+}
+/** Pengeluaran per kapita per wilayah untuk satu tahun (bar). */
+export function getPengeluaranTahun(tahun: number): PengeluaranRow[] {
+  return query<PengeluaranRow>("SELECT tahun, wilayah, nilai FROM pengeluaran_perkapita WHERE tahun=? ORDER BY tahun, wilayah", [tahun]);
+}
+export function getPengeluaranTahunList(): number[] {
+  return query<{ t: number }>("SELECT DISTINCT tahun t FROM pengeluaran_perkapita ORDER BY t").map((r) => r.t);
 }

@@ -96,8 +96,60 @@ export function titleCase(s: string): string {
   return s
     .toLowerCase()
     .split(/([ /])/)
-    .map((w) => (w.length > 2 ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+    .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1) : w))
     .join("");
+}
+
+// Kamus kata dasar untuk memecah nama komoditas yang "menempel" (sumber CSV tanpa spasi),
+// mis. PENGOLAHANGABAR -> "Pengolahan Gobar". Dipakai longest-match-first di bawah.
+const BASE_WORDS = new Set([
+  "PENGOLAHAN", "PENGGILINGAN", "KERAJINAN", "SERABUT", "TEMPE", "TEPUNG", "SUSU",
+  "SAOS", "PUPUK", "OLAHAN", "BATAKO", "BATA", "KELAPA", "KEDELAI", "LIDI", "PADI",
+  "KAYU", "GABAR", "TEMPURUNG", "GLAGAH", "IJUK", "TOMAT", "MOCAF", "TAPIOKA", "GEMBUS",
+  "RAKYAT", "PEYEM", "KOLANG", "KALING", "BUBUK", "AREN", "URUT", "NILAM", "ATSIRI",
+  "MELINJO", "MLINJO", "ORGANIK", "ELEKTRONIK", "BENGKELAN", "VENEER", "ROKOK",
+  "SABLON", "TAHU", "TAPE", "KULIT", "KACANG", "SINGKONG", "SALAK", "JARING", "PLASTIK",
+  "RAJUT", "PANDAN", "BATIK", "TULIS", "MARMER", "LEMPENG", "GENTENG", "BATU", "BAMBU",
+  "PERABOT", "MEBELAIR", "MEUBELAIR", "WAYANG", "KOP", "KULIT",
+]);
+
+/**
+ * Pecah nama komoditas yang menempel menjadi kata-kata, lalu title-case.
+ * "PENGOLAHANGABAR" -> "Pengolahan Gobar". String ber-spasi (bukan slash) lolos apa adanya;
+ * slash dinormal jadi " / ". ponytail: longest-match-first vs kamus (bukan NLP) — cukup untuk
+ * label tabel/chart; tambah entri ke BASE_WORDS bila ada kata dasar yang belum ada.
+ */
+export function prettyLabel(s: string): string {
+  // token: pecah pada spasi & slash; slash dipertahankan sebagai token pemisah.
+  // Bentuk menempel kapital (mis. PENGOLAHANGABAR) dipecah longest-match-first via kamus.
+  const tokens = s
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .flatMap((tok) => {
+      // pisahkan segmen oleh slash, sisipkan "/" di antara
+      const segs = tok.split("/");
+      const out: string[] = [];
+      segs.forEach((seg, idx) => {
+        if (idx > 0) out.push("/");
+        if (!seg) return;
+        if (!/^[A-Za-z]+$/.test(seg) || !/[A-Z]/.test(seg) || /^[a-z]/.test(seg)) {
+          out.push(seg);
+        } else {
+          let rest = seg;
+          while (rest.length) {
+            let best = 0;
+            for (const w of BASE_WORDS) {
+              if (rest.startsWith(w) && w.length > best) best = w.length;
+            }
+            if (best > 0) { out.push(rest.slice(0, best)); rest = rest.slice(best); }
+            else { out.push(rest); break; }
+          }
+        }
+      });
+      return out;
+    })
+    .filter(Boolean);
+  return titleCase(tokens.join(" "));
 }
 
 /** Parse baris CSV sederhana (mendukung quote & koma di dalam quote). */

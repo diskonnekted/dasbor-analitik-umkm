@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useDB } from "@/hooks/useDB";
 import { getIndustriList, getIndustriTahunList } from "@/lib/db";
-import { titleCase } from "@/lib/normalize";
+import { prettyLabel } from "@/lib/normalize";
 import { Badge, Field, fmtNum, MonoLabel, Panel, SectionHead } from "@/components/ui";
 
 export default function Industri() {
@@ -16,7 +16,7 @@ export default function Industri() {
 
   const rows = useMemo(() => {
     if (status !== "ready") return [];
-    const data = getIndustriList(tahun).map((d) => ({ ...d, label: titleCase(d.jenis_normalized) }));
+    const data = getIndustriList(tahun).map((d) => ({ ...d, label: prettyLabel(d.jenis_normalized) }));
     const filtered = q.trim()
       ? data.filter((d) => d.label.toLowerCase().includes(q.toLowerCase()))
       : data;
@@ -106,7 +106,7 @@ export default function Industri() {
                   <YAxis
                     type="category"
                     dataKey="nama"
-                    width={130}
+                    width={170}
                     tick={{ fill: "#141414", fontSize: 10, fontFamily: "JetBrains Mono" }}
                     axisLine={{ stroke: "#141414" }}
                     tickLine={{ stroke: "#141414" }}
@@ -146,7 +146,7 @@ export default function Industri() {
                 <tbody>
                   {rows.map((r) => (
                     <tr key={r.jenis_normalized} className="border-t border-hd-subtle font-mono text-xs">
-                      <td className="p-3 uppercase tracking-wide">{r.label}</td>
+                      <td className="p-3 font-medium tracking-wide">{r.label}</td>
                       <td className="p-3 text-right">{fmtNum(r.jml)}</td>
                       <td className="p-3 text-right font-bold">{fmtNum(r.tk)}</td>
                       <td className="p-3 text-right">{fmtNum(r.inv)}</td>
