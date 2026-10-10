@@ -5,8 +5,8 @@ import tsconfigPaths from "vite-tsconfig-paths";
 
 // https://vite.dev/config/
 export default defineConfig({
-  // Deploy GitHub Pages: https://diskonnekted.github.io/dasbor-analitik-umkm/
-  base: '/dasbor-analitik-umkm/',
+  // cPanel: umkm.sistemdata.id (domain root)
+  base: '/',
   build: {
     sourcemap: 'hidden',
   },
