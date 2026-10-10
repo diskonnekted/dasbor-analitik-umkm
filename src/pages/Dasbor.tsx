@@ -10,6 +10,12 @@ import { titleCase } from "@/lib/normalize";
 
 const CLUSTER_COLORS = ["#DC2626", "#F59E0B", "#10B981", "#2563EB", "#7C3AED"];
 
+const KLASTER_KETERANGAN: Record<string, string> = {
+  "Prioritas Tinggi": "Potensi ekonomi tinggi — konsentrasi koperasi & industri terbesar. Fokus intervensi utama.",
+  "Prioritas Menengah": "Potensi sedang — layak dipacu dengan pendampingan & akses permodalan.",
+  "Prioritas Rendah": "Potensi masih kecil — perlu pembangunan kapasitas dasar UMKM.",
+};
+
 export default function Dasbor() {
   const { status, error } = useDB();
 
@@ -48,8 +54,9 @@ export default function Dasbor() {
     const sarana = query<{ jenis: string; jumlah: number; tahun: number }>(
       "SELECT jenis, SUM(jumlah) jumlah, tahun FROM sarana_perdagangan WHERE jumlah IS NOT NULL AND tahun=(SELECT MAX(tahun) FROM sarana_perdagangan WHERE jumlah IS NOT NULL) GROUP BY jenis, tahun ORDER BY jumlah DESC"
     );
+    const saranaTahun = sarana.length ? String(sarana[0].tahun) : "-";
 
-    return { stat, topIndustri, lineData, kecList, ptbhLine, colors, labels, res, sarana, tahunIndustri };
+    return { stat, topIndustri, lineData, kecList, ptbhLine, colors, labels, res, sarana, saranaTahun, tahunIndustri };
   }, [status]);
 
   if (status === "loading" || status === "idle")
@@ -242,16 +249,31 @@ export default function Dasbor() {
           <PetaKlaster colors={data.colors} />
           <Panel>
             <MonoLabel>Legenda klaster</MonoLabel>
-            <ul className="space-y-2">
+            <ul className="space-y-2.5">
               {data.labels.map((l) => (
-                <li key={l.idx} className="flex items-center gap-3 font-mono text-xs uppercase tracking-wide">
-                  <span className="w-5 h-5 border-hd" style={{ background: l.color }} />
-                  {l.label}
+                <li key={l.idx} className="flex items-start gap-3">
+                  <span
+                    className="w-5 h-5 border-hd shrink-0 mt-0.5"
+                    style={{ background: l.color }}
+                    aria-hidden
+                  />
+                  <span className="min-w-0">
+                    <span className="block font-mono text-xs font-bold uppercase tracking-wide">
+                      {l.label}
+                    </span>
+                    <span className="block text-[11px] leading-snug text-[#555]">
+                      {KLASTER_KETERANGAN[l.label]}
+                    </span>
+                  </span>
                 </li>
               ))}
             </ul>
+            <p className="mt-3 text-[11px] leading-snug text-[#666] border-l-2 border-[#141414] pl-2.5">
+              Klaster dihitung dengan K-Means (k=3) atas jumlah <b>koperasi</b> + <b>industri rumah
+              tangga</b> per kecamatan. Nilai lebih besar → prioritas lebih tinggi.
+            </p>
             <div className="border-t border-hd-subtle pt-3 mt-3">
-              <MonoLabel>Sarana Perdagangan (terbaru)</MonoLabel>
+              <MonoLabel>Sarana Perdagangan ({data.saranaTahun})</MonoLabel>
               <ul className="mt-2 space-y-1.5">
                 {data.sarana.map((s) => (
                   <li key={s.jenis} className="flex items-center justify-between font-mono text-xs">
@@ -260,6 +282,9 @@ export default function Dasbor() {
                   </li>
                 ))}
               </ul>
+              <p className="mt-2 text-[11px] leading-snug text-[#666]">
+                Total satuan sarana perdagangan se-kabupaten, per jenis, tahun terbaru tersedia.
+              </p>
             </div>
           </Panel>
         </div>

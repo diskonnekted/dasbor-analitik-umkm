@@ -22,10 +22,10 @@ export default function PetaKlaster({ colors, height = 420 }: Props) {
       [-7.39, 109.7],
       10
     );
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "© OpenStreetMap",
-      maxZoom: 18,
-    }).addTo(map);
+    L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+      { attribution: "Tiles © Esri", maxZoom: 19 }
+    ).addTo(map);
     mapRef.current = map;
     return () => {
       map.remove();

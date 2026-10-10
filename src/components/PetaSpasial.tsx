@@ -23,10 +23,10 @@ export default function PetaSpasial({ data, label, height = 420 }: Props) {
   useEffect(() => {
     if (!elRef.current || mapRef.current) return;
     const map = L.map(elRef.current, { scrollWheelZoom: false }).setView([-7.39, 109.7], 10);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "© OpenStreetMap",
-      maxZoom: 18,
-    }).addTo(map);
+    L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+      { attribution: "Tiles © Esri", maxZoom: 19 }
+    ).addTo(map);
     mapRef.current = map;
     return () => {
       map.remove();
